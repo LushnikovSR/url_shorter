@@ -1,10 +1,15 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
+	"os/signal"
 	"sync"
+	"syscall"
+	"time"
 )
 
 type Response struct {
@@ -39,21 +44,31 @@ func main() {
 
 	safeMap := NewSafeMap(1000)
 
+	server := &http.Server{
+		Addr: ":8080",
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		var resp Response
 		resp.Message = "Hello"
 		jsonResponse, err := json.Marshal(resp)
 		if err != nil {
-			//возвращает назад текст и меняет "Content-Type" на "text/plain"
-			//http.Error(w, err.Error(), http.StatusInternalServerError)
-
 			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			err := json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			if err != nil {
+				fmt.Printf("JSON encode error: %v", err)
+			}
 			return
 
 		}
-		w.Write(jsonResponse)
+		_, err = w.Write(jsonResponse)
+		if err != nil {
+			fmt.Printf("Write error from '/': %v\n", err)
+		}
 	})
 
 	http.HandleFunc("/name", func(w http.ResponseWriter, r *http.Request) {
@@ -65,7 +80,10 @@ func main() {
 		jsonResponse, err := json.Marshal(resp)
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			err := json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			if err != nil {
+				fmt.Printf("JSON encode error: %v\n", err)
+			}
 			return
 		}
 		w.Write(jsonResponse)
@@ -99,13 +117,38 @@ func main() {
 		jsonResponse, err := json.Marshal(resp)
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			err := json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			if err != nil {
+				fmt.Printf("JSON encode error: %v\n", err)
+			}
 			return
 		}
 		w.Write(jsonResponse)
 	})
 
-	if err := http.ListenAndServe(":8080", nil); err != nil {
-		panic(err)
-	}
+	go func() {
+		fmt.Println("Server starting on port 8080...")
+		err := server.ListenAndServe()
+		if err != nil && err != http.ErrServerClosed {
+			fmt.Printf("Server failed: %v\n", err)
+		}
+	}()
+
+	go func() {
+		exit := make(chan os.Signal, 1)
+		signal.Notify(exit, os.Interrupt, syscall.SIGTERM)
+		<-exit
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer shutdownCancel()
+		fmt.Println("Shutting down server...")
+		err := server.Shutdown(shutdownCtx)
+		if err != nil {
+			fmt.Printf("Shutdown error: %v\n", err)
+		}
+		cancel()
+	}()
+
+	<-ctx.Done()
+	fmt.Println("Server stoped")
+
 }
